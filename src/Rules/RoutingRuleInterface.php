@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace NeuronAI\Router\Rules;
+namespace NeuronAI\Rules;
 
 use NeuronAI\Chat\Messages\Message;
 use NeuronAI\Tools\ToolInterface;

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace NeuronAI\Router;
+namespace NeuronAI;
 
 use Closure;
 use Generator;
@@ -15,17 +15,21 @@ use NeuronAI\HttpClient\HttpClientInterface;
 use NeuronAI\Providers\AIProviderInterface;
 use NeuronAI\Providers\MessageMapperInterface;
 use NeuronAI\Providers\ToolMapperInterface;
-use NeuronAI\Router\Rules\RoutingRuleInterface;
+use NeuronAI\Rules\RoundRobinRule;
+use NeuronAI\Rules\RoutingRuleInterface;
 use NeuronAI\StaticConstructor;
 use NeuronAI\Tools\ToolInterface;
 
-use function implode;
-use function is_array;
-use function array_keys;
-use function in_array;
 use function array_key_last;
+use function array_keys;
 use function array_values;
+use function count;
+use function implode;
+use function in_array;
+use function is_array;
 
+// Added a built-in RouterProvider so this fork can route requests across
+// multiple providers, with optional weighted load balancing on RoundRobinRule.
 class RouterProvider implements AIProviderInterface
 {
     use StaticConstructor;
@@ -58,14 +62,38 @@ class RouterProvider implements AIProviderInterface
      */
     protected array $tools = [];
 
-    public function addProvider(string $name, AIProviderInterface $provider): self
-    {
+    /**
+     * @var array<string, array{useLoadBalancing: bool, utilizationRate: int|null}>
+     */
+    protected array $providerRoutingConfig = [];
+
+    public function addProvider(
+        string $name,
+        AIProviderInterface $provider,
+        bool $useLoadBalancing = false,
+        ?int $utilizationRate = null,
+    ): self {
+        if ($useLoadBalancing && ($utilizationRate === null || $utilizationRate <= 0)) {
+            throw new ProviderException(
+                "RouterProvider: provider '{$name}' has load balancing enabled but utilizationRate is missing or invalid.",
+            );
+        }
+
         $this->providers[$name] = $provider;
+        $this->providerRoutingConfig[$name] = [
+            'useLoadBalancing' => $useLoadBalancing,
+            'utilizationRate' => $utilizationRate,
+        ];
+
         return $this;
     }
 
     public function setRule(RoutingRuleInterface $rule): self
     {
+        if ($rule instanceof RoundRobinRule) {
+            $this->configureRoundRobinLoadBalancing($rule);
+        }
+
         $this->rule = $rule;
         return $this;
     }
@@ -141,7 +169,7 @@ class RouterProvider implements AIProviderInterface
         return $this->withFallback(
             'chat',
             $messages,
-            fn (AIProviderInterface $provider): \NeuronAI\Chat\Messages\Message => $provider->chat(...$messages),
+            fn (AIProviderInterface $provider): Message => $provider->chat(...$messages),
         );
     }
 
@@ -213,7 +241,7 @@ class RouterProvider implements AIProviderInterface
         return $this->withFallback(
             'structured',
             is_array($messages) ? $messages : [$messages],
-            fn (AIProviderInterface $provider): \NeuronAI\Chat\Messages\Message => $provider->structured($messages, $class, $response_schema),
+            fn (AIProviderInterface $provider): Message => $provider->structured($messages, $class, $response_schema),
         );
     }
 
@@ -222,7 +250,7 @@ class RouterProvider implements AIProviderInterface
      */
     public function messageMapper(): MessageMapperInterface
     {
-        if (!$this->resolvedProvider instanceof \NeuronAI\Providers\AIProviderInterface) {
+        if (!$this->resolvedProvider instanceof AIProviderInterface) {
             throw new ProviderException(
                 'RouterProvider: no provider available for delegation. Call setDefaultProvider() or make an inference call first.',
             );
@@ -235,7 +263,7 @@ class RouterProvider implements AIProviderInterface
      */
     public function toolPayloadMapper(): ToolMapperInterface
     {
-        if (!$this->resolvedProvider instanceof \NeuronAI\Providers\AIProviderInterface) {
+        if (!$this->resolvedProvider instanceof AIProviderInterface) {
             throw new ProviderException(
                 'RouterProvider: no provider available for delegation. Call setDefaultProvider() or make an inference call first.',
             );
@@ -377,5 +405,55 @@ class RouterProvider implements AIProviderInterface
         $status = $e->response?->statusCode;
 
         return $status === null || $status === 429 || $status >= 500;
+    }
+
+    /**
+     * Reads per-provider routing flags and, when present for all providers in the
+     * round-robin rule, upgrades it to weighted load balancing.
+     *
+     * @throws ProviderException
+     */
+    protected function configureRoundRobinLoadBalancing(RoundRobinRule $rule): void
+    {
+        $providers = $rule->getProviders();
+        $weights = [];
+
+        foreach ($providers as $name) {
+            if (!isset($this->providers[$name])) {
+                throw new ProviderException(
+                    "RouterProvider: unknown provider '{$name}' in RoundRobinRule. Available: " . implode(', ', array_keys($this->providers)),
+                );
+            }
+
+            $config = $this->providerRoutingConfig[$name] ?? [
+                'useLoadBalancing' => false,
+                'utilizationRate' => null,
+            ];
+
+            if ($config['useLoadBalancing']) {
+                if ($config['utilizationRate'] === null || $config['utilizationRate'] <= 0) {
+                    throw new ProviderException(
+                        "RouterProvider: provider '{$name}' has invalid utilizationRate for load balancing.",
+                    );
+                }
+
+                $weights[$name] = $config['utilizationRate'];
+            }
+        }
+
+        if ($weights === []) {
+            $rule->setUseLoadBalancing(false);
+            return;
+        }
+
+        if (count($weights) !== count($providers)) {
+            throw new ProviderException(
+                'RouterProvider: when enabling load balancing in RoundRobinRule, all listed providers must define useLoadBalancing=true and utilizationRate.',
+            );
+        }
+
+        $rule
+            ->setUseLoadBalancing(true)
+            ->setProviderWeights($weights);
     }
 }

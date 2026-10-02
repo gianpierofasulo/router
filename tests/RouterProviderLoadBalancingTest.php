@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace NeuronAI\Tests\Router;
+namespace NeuronAI\Tests;
 
 use NeuronAI\Chat\Messages\AssistantMessage;
 use NeuronAI\Chat\Messages\UserMessage;
-use NeuronAI\Router\RouterProvider;
-use NeuronAI\Router\Rules\RoundRobinRule;
+use NeuronAI\RouterProvider;
+use NeuronAI\Rules\RoundRobinRule;
 use NeuronAI\Testing\FakeAIProvider;
 use PHPUnit\Framework\TestCase;
 

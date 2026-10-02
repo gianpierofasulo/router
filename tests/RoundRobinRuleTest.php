@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace NeuronAI\Tests\Router;
+namespace NeuronAI\Tests;
 
 use InvalidArgumentException;
-use NeuronAI\Router\Rules\RoundRobinRule;
+use NeuronAI\Rules\RoundRobinRule;
 use PHPUnit\Framework\TestCase;
 
 // Added coverage for weighted load balancing to guarantee deterministic
